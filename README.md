@@ -2,7 +2,7 @@
 
 Скиллы для **продактов**: готовые инструкции агентов под типовые задачи discovery и product work.
 
-Каждый скилл — файл `SKILL.md`. Загружаешь в агента в Yandex AI Studio или другую площадку — и получаешь предсказуемый артефакт (бриф, Lean Canvas, story map и т.д.), а не «кот в мешке» из свободного чата.
+Каждый скилл — файл `SKILL.md`. Загружаешь в агента в Yandex AI Studio — и получаешь предсказуемый артефакт (бриф, Lean Canvas, story map и т.д.), а не «кот в мешке» из свободного чата.
 
 Можно использовать **по одному** или собрать в **конвейер** из нескольких агентов.
 
@@ -39,8 +39,17 @@
 ```
 idea → brief → market ∥ personas → interview
               → lean_canvas + story_map → wireframes
-              
 ```
+
+**С чего начать:** три ноды  
+`brief-writing` → `user-story-mapping` → `wireframe-spec`
+
+### Ещё два скилла
+
+| Скилл | Папка | Для чего |
+|-------|-------|----------|
+| User Journey Map | [`user-journey-map`](user-journey-map/) | путь пользователя |
+| Information Architecture | [`information-architecture`](information-architecture/) | структура продукта / навигация |
 
 ---
 
@@ -51,3 +60,5 @@ skill-slug/
 ├── SKILL.md      # инструкция агента
 └── examples.md   # пример артефакта (опционально)
 ```
+
+Язык работы — русский.
