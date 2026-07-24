@@ -2,3 +2,6 @@
 *.swp
 .idea/
 .vscode/
+__pycache__/
+*.py[cod]
+.ruff_cache/
