@@ -56,6 +56,12 @@ def _text(shape) -> str:
     return " ".join(shape.text_frame.text.split())
 
 
+def _raw_text(shape) -> str:
+    if not getattr(shape, "has_text_frame", False):
+        return ""
+    return shape.text_frame.text
+
+
 def _text_font_sizes(shape) -> list[float]:
     sizes: list[float] = []
     if not getattr(shape, "has_text_frame", False):
@@ -73,7 +79,7 @@ def _estimate_text_capacity(shape) -> tuple[int, int]:
     The constants approximate average glyph width and line height. The result
     is a conservative warning heuristic, not a typography engine.
     """
-    text = _text(shape)
+    text = _raw_text(shape)
     if not text:
         return 0, 1
     bbox = _bbox(shape)
@@ -85,9 +91,25 @@ def _estimate_text_capacity(shape) -> tuple[int, int]:
     font_pt = max(sizes) if sizes else 18
     avg_char_in = max(0.055, font_pt / 72 * 0.52)
     chars_per_line = max(4, int(width_in / avg_char_in))
-    required = sum(
-        max(1, math.ceil(len(part) / chars_per_line)) for part in text.split("\n")
-    )
+    required = 0
+    for part in text.splitlines() or [""]:
+        words = part.split()
+        if not words:
+            required += 1
+            continue
+        current = 0
+        for word in words:
+            word_length = len(word)
+            if current == 0:
+                required += max(1, math.ceil(word_length / chars_per_line))
+                current = word_length % chars_per_line
+                continue
+            needed = 1 + word_length
+            if current + needed <= chars_per_line:
+                current += needed
+            else:
+                required += max(1, math.ceil(word_length / chars_per_line))
+                current = word_length % chars_per_line
     line_height_in = font_pt / 72 * 1.16
     available = max(1, int(height_in / max(line_height_in, 0.01)))
     return required, available

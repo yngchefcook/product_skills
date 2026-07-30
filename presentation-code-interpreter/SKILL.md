@@ -15,7 +15,57 @@ description: Create and quality-check polished PPTX presentations inside Code In
 Работать только внутри каталога загруженных файлов, обычно `/mnt/data` или
 текущей рабочей директории. Не искать рекурсивно по всему диску.
 
-Если загружен ZIP с файлами Code Interpreter:
+Если файлы Code Interpreter загружены по отдельности, сначала восстановить
+структуру bundle. Интерфейс может положить все файлы в один каталог, хотя
+каталог изображений ожидается внутри `images/`:
+
+```python
+from pathlib import Path
+import json
+import shutil
+
+data_root = Path("/mnt/data") if Path("/mnt/data").exists() else Path.cwd()
+core_names = [
+    "builder.py",
+    "helpers.py",
+    "image_filenames.py",
+    "validate_deck.py",
+    "render_deck.py",
+    "themes.json",
+    "image_catalog.json",
+    "DESIGN_GUIDE.md",
+    "SPEC_REFERENCE.md",
+    "QUALITY_CHECKLIST.md",
+]
+
+if (data_root / "builder.py").is_file():
+    missing = [name for name in core_names if not (data_root / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Не хватает обязательных файлов:\n- " + "\n- ".join(missing)
+        )
+
+    bundle_dir = data_root / "presentation_bundle"
+    images_dir = bundle_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in core_names:
+        shutil.copy2(data_root / name, bundle_dir / name)
+
+    catalog = json.loads(
+        (data_root / "image_catalog.json").read_text(encoding="utf-8")
+    )
+    for item in catalog.get("items", []):
+        relative_path = Path(item["path"])
+        source = data_root / relative_path.name
+        if not source.is_file():
+            raise FileNotFoundError(f"Не найден файл изображения: {source.name}")
+        target = bundle_dir / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+```
+
+Если вместо отдельных файлов загружен поддерживаемый интерфейсом ZIP:
 
 ```python
 from pathlib import Path
@@ -26,7 +76,7 @@ archives = list(data_root.glob("*code-interpreter*.zip"))
 if not archives:
     archives = list(data_root.glob("*.zip"))
 if not archives:
-    raise FileNotFoundError("Не найден ZIP с presentation bundle")
+    archives = []
 
 archive_path = None
 for candidate in archives:
@@ -34,13 +84,11 @@ for candidate in archives:
         if any(Path(name).name == "builder.py" for name in archive.namelist()):
             archive_path = candidate
             break
-if archive_path is None:
-    raise FileNotFoundError("В загруженных ZIP не найден builder.py")
-
-bundle_dir = data_root / "presentation_bundle"
-bundle_dir.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(archive_path) as archive:
-    archive.extractall(bundle_dir)
+if archive_path is not None:
+    bundle_dir = data_root / "presentation_bundle"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        archive.extractall(bundle_dir)
 ```
 
 Найти `builder.py` только в ожидаемых уровнях:
@@ -54,6 +102,9 @@ if Path("/mnt/data").exists():
 
 candidates = []
 for root in roots:
+    preferred = root / "presentation_bundle" / "builder.py"
+    if preferred.is_file():
+        candidates.append(preferred)
     candidates.extend(root.glob("builder.py"))
     candidates.extend(root.glob("*/builder.py"))
     candidates.extend(root.glob("*/*/builder.py"))
@@ -80,8 +131,10 @@ if not report["ready"]:
     raise RuntimeError("Bundle или зависимости загружены не полностью")
 ```
 
-Если отсутствуют зависимости, установить их из `requirements.txt` доступным
-пакетным менеджером. Не переустанавливать уже работающую среду.
+Если отсутствуют зависимости, установить их из `requirements.txt`, когда файл
+загружен. Для плоского комплекта без `requirements.txt` установить
+`python-pptx>=0.6.21` и `Pillow>=10` доступным пакетным менеджером. Не
+переустанавливать уже работающую среду.
 
 ## 2. Определить коммуникационную задачу
 
@@ -116,6 +169,8 @@ if not report["ready"]:
 - Использовать прямой естественный язык без рекламных клише и повторяющихся
   формул.
 - Сокращать текст или менять композицию до уменьшения шрифта.
+- Не пытаться уместить абзац в фиксированный блок. Если мысль не сокращается,
+  разделить её на два слайда или выбрать другой тип слайда.
 - Не создавать вымышленные факты, клиентов, цитаты, источники и результаты.
 - Использовать сценарные цифры только по разрешению пользователя и подписывать
   каждый затронутый слайд: `Иллюстративный сценарий`, `Допущение` или
@@ -178,7 +233,8 @@ space со стороны текста. Не создавать логотипы
 которые выглядят как реальные данные.
 
 Не рисовать растровые иллюстрации Python-кодом и не подменять визуал
-декоративными фигурами. Подробный workflow находится в `IMAGE_GENERATION.md`.
+декоративными фигурами. Если загружен `IMAGE_GENERATION.md`, использовать его
+как подробный workflow.
 
 ## 6. Собрать spec
 
@@ -252,6 +308,12 @@ if (
 print(path, path.stat().st_size)
 ```
 
+Builder проверяет расчётное число строк до вставки текста, включает безопасный
+autofit и после сохранения автоматически запускает структурный QA. Если
+`build_from_spec` сообщает `does not fit` или `failed structural QA`, не
+обходить проверку и не править размеры вручную: сократить текст, уменьшить
+количество элементов или выбрать другой тип слайда, затем собрать заново.
+
 Имя файла задавать латиницей, цифрами, `_` и `-`, без пробелов. Видимое название
 может быть на любом языке.
 
@@ -285,7 +347,9 @@ print(contact_sheet)
 Просмотреть каждый слайд отдельно в полном размере и общий contact sheet.
 Исправить обрезки, неожиданные переносы, наложения, мелкий текст, слабые crop,
 повторяющиеся силуэты, ошибки данных и несогласованные футеры. Структурная
-проверка не заменяет визуальный просмотр.
+проверка не заменяет визуальный просмотр. Проверить не только границы текстовых
+блоков, но и фактически отрендеренные строки: текст не должен заходить на
+соседний объект даже при отличиях шрифтов между runtime и PowerPoint.
 
 Если системный рендерер отсутствует, экспортировать PPTX в PDF любым доступным
 совместимым редактором и проверить растровые страницы. Явно сообщить об

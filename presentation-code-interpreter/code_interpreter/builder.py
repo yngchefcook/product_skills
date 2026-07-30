@@ -18,7 +18,9 @@ CLI example:
 from __future__ import annotations
 
 import copy
+import math
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -33,7 +35,7 @@ from pptx.enum.chart import (
     XL_MARKER_STYLE,
 )
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.oxml.ns import qn
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Inches, Pt
@@ -244,6 +246,62 @@ def _set_cell_borders(cell, color: str | Sequence[int], width_pt: float = 0.55):
         node.append(dash)
 
 
+def _wrapped_line_count(text: str, width_in: float, font_pt: float) -> int:
+    """Conservatively estimate wrapped lines for a fixed-width text box."""
+    # Average Latin/Cyrillic body glyphs occupy roughly 0.52 em. This matches
+    # the structural validator while leaving renderer-level variance to
+    # PowerPoint's text-to-fit safety setting.
+    chars_per_line = max(1, int(width_in * 72 / max(font_pt * 0.52, 1)))
+    lines = 0
+    for raw_line in str(text).splitlines() or [""]:
+        if not raw_line.strip():
+            lines += 1
+            continue
+        lines += max(
+            1,
+            len(
+                textwrap.wrap(
+                    raw_line,
+                    width=chars_per_line,
+                    break_long_words=True,
+                    break_on_hyphens=True,
+                    replace_whitespace=False,
+                )
+            ),
+        )
+    return lines
+
+
+def _assert_text_fits(
+    text: str,
+    w: float,
+    h: float,
+    *,
+    size: float,
+    margin: float = 0.0,
+    line_spacing: float | None = None,
+    label: str = "text box",
+) -> None:
+    """Raise before rendering when text cannot fit its assigned geometry."""
+    usable_w = max(0.1, float(w) - 2 * float(margin))
+    usable_h = max(0.05, float(h) - 2 * float(margin) - 0.03)
+    required_lines = _wrapped_line_count(str(text), usable_w, float(size))
+    spacing_factor = (
+        max(1.0, float(line_spacing)) if line_spacing is not None else 1.16
+    )
+    line_height_in = float(size) / 72 * spacing_factor
+    available_lines = max(1, math.floor(usable_h / max(line_height_in, 0.01)))
+    if required_lines > available_lines:
+        excerpt = " ".join(str(text).split())
+        if len(excerpt) > 72:
+            excerpt = f"{excerpt[:69]}..."
+        raise ValueError(
+            f"{label} does not fit: {required_lines} estimated lines, "
+            f"{available_lines} available at {size:g} pt in {w:g}×{h:g} in. "
+            f"Shorten the content or choose another slide type: {excerpt!r}"
+        )
+
+
 def _textbox(
     slide,
     text: str,
@@ -260,11 +318,25 @@ def _textbox(
     valign: MSO_ANCHOR = MSO_ANCHOR.TOP,
     margin: float = 0.0,
     line_spacing: float | None = None,
+    label: str = "text box",
 ):
+    _assert_text_fits(
+        str(text),
+        w,
+        h,
+        size=size,
+        margin=margin,
+        line_spacing=line_spacing,
+        label=label,
+    )
     shape = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = shape.text_frame
     tf.clear()
     tf.word_wrap = True
+    # Keep explicit font sizes as the design contract, while allowing Office to
+    # make only renderer-level safety adjustments instead of overflowing into
+    # the next object.
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     tf.margin_left = Inches(margin)
     tf.margin_right = Inches(margin)
     tf.margin_top = Inches(margin)
@@ -300,15 +372,33 @@ def _add_paragraphs(
     max_items: int = 5,
     spacing: float = 10,
 ):
+    rendered_items = [str(item) for item in list(items)[:max_items]]
+    required_height = 0.0
+    for item in rendered_items:
+        lines = _wrapped_line_count(
+            f"{'00  ' if numbered else '●  '}{item}",
+            float(w),
+            float(size),
+        )
+        required_height += lines * (float(size) / 72 * 1.16)
+    if len(rendered_items) > 1:
+        required_height += (len(rendered_items) - 1) * (float(spacing) / 72)
+    if required_height > float(h) - 0.03:
+        raise ValueError(
+            f"bullet list does not fit: needs approximately "
+            f"{required_height:.2f} in, {h:.2f} in available. "
+            "Shorten bullets, reduce their count, or choose another slide type."
+        )
     shape = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = shape.text_frame
     tf.clear()
     tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     tf.margin_left = 0
     tf.margin_right = 0
     tf.margin_top = 0
     tf.margin_bottom = 0
-    for index, item in enumerate(list(items)[:max_items]):
+    for index, item in enumerate(rendered_items):
         p = tf.paragraphs[0] if index == 0 else tf.add_paragraph()
         p.space_after = Pt(spacing)
         p.line_spacing = 1.08
@@ -1225,6 +1315,8 @@ def _slide_table(prs, slide_spec: dict, theme: dict, page: int):
         _set_cell_borders(cell, theme["dark_alt"], width_pt=0.45)
         tf = cell.text_frame
         tf.clear()
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
         tf.vertical_anchor = MSO_ANCHOR.MIDDLE
         p = tf.paragraphs[0]
         run = p.add_run()
@@ -1247,6 +1339,8 @@ def _slide_table(prs, slide_spec: dict, theme: dict, page: int):
             _set_cell_borders(cell, theme["line"], width_pt=0.45)
             tf = cell.text_frame
             tf.clear()
+            tf.word_wrap = True
+            tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
             tf.vertical_anchor = MSO_ANCHOR.MIDDLE
             p = tf.paragraphs[0]
             p.alignment = (
@@ -1580,9 +1674,11 @@ def build_from_spec(spec: dict, out_dir: str | Path | None = None) -> str:
         Absolute path to the written ``.pptx`` file as a string.
 
     Raises:
-        ValueError: If :func:`lint_spec` reports blocking errors.
+        ValueError: If :func:`lint_spec` reports blocking errors or content
+            cannot fit its assigned text geometry at the designed font size.
         RuntimeError: If a remote image cannot be materialized or the output is
-            missing/empty after saving.
+            missing/empty after saving, or structural QA finds overflow,
+            out-of-bounds objects, or unintended overlaps.
         OSError: If the destination cannot be created or written.
 
     Notes:
@@ -1611,6 +1707,17 @@ def build_from_spec(spec: dict, out_dir: str | Path | None = None) -> str:
         prs.save(path)
     if not path.exists() or path.stat().st_size == 0:
         raise RuntimeError(f"Presentation was not written correctly: {path}")
+    try:
+        from .validate_deck import inspect_deck
+    except ImportError:
+        from validate_deck import inspect_deck
+
+    qa = inspect_deck(path)
+    if qa["issues"]:
+        raise RuntimeError(
+            f"Presentation failed structural QA and must not be delivered: {path}\n- "
+            + "\n- ".join(qa["issues"])
+        )
     return str(path)
 
 
